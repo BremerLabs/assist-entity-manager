@@ -1,0 +1,14 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Assist Entity Manager",
+        "description": "Richtet das automatische Assist-Manager-Panel in der Home-Assistant-Seitenleiste ein. Die manuelle Dashboard-Karte bleibt zusätzlich verfügbar.",
+        "data": {}
+      }
+    },
+    "abort": {
+      "already_configured": "Assist Entity Manager ist bereits eingerichtet."
+    }
+  }
+}
