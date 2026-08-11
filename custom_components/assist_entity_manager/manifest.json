@@ -13,5 +13,6 @@
     "frontend",
     "http",
     "panel_custom"
-  ]
+  ],
+  "iot_class": "calculated"
 }
