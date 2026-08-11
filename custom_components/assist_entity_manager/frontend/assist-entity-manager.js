@@ -1,5 +1,5 @@
-/* Assist Entity Manager language loader – v1.0.0 */
-const AEM_VERSION = "1.0.0";
+/* Assist Entity Manager language loader – v1.0.1 */
+const AEM_VERSION = "1.0.1";
 const AEM_BASE = "/assist_entity_manager";
 
 function aemLanguage(hass) {
@@ -129,6 +129,6 @@ class AssistEntityManagerPanel extends HTMLElement {
 if (!customElements.get("assist-entity-manager-panel")) {
   customElements.define("assist-entity-manager-panel", AssistEntityManagerPanel);
 }
-console.info("%c Assist Entity Manager %c 1.0.0 ",
+console.info("%c Assist Entity Manager %c 1.0.1 ",
   "background:#03a9f4;color:#fff;font-weight:700;padding:2px 5px;border-radius:3px 0 0 3px",
   "background:#263238;color:#fff;padding:2px 5px;border-radius:0 3px 3px 0");
