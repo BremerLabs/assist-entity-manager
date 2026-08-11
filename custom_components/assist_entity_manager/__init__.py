@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 
 DOMAIN = "assist_entity_manager"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 PANEL_URL_PATH = "assist-entity-manager"
 FRONTEND_BASE_URL = "/assist_entity_manager"
 MODULE_URL = f"{FRONTEND_BASE_URL}/assist-entity-manager.js?v={VERSION}"
