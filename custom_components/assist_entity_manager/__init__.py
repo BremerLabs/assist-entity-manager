@@ -8,6 +8,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.panel_custom import async_register_panel
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 
 DOMAIN = "assist_entity_manager"
 VERSION = "1.0.0"
@@ -15,6 +16,8 @@ PANEL_URL_PATH = "assist-entity-manager"
 FRONTEND_BASE_URL = "/assist_entity_manager"
 MODULE_URL = f"{FRONTEND_BASE_URL}/assist-entity-manager.js?v={VERSION}"
 FRONTEND_DIR = Path(__file__).parent / "frontend"
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
