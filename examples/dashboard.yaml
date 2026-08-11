@@ -1,0 +1,8 @@
+title: Assist Manager
+views:
+  - title: Assist Manager
+    path: assist-manager
+    icon: mdi:account-voice
+    type: panel
+    cards:
+      - type: custom:assist-entity-manager
