@@ -10,8 +10,15 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 
-DOMAIN = "assist_entity_manager"
-VERSION = "1.0.1"
+from .const import DOMAIN, VERSION
+from .semantic_provider import SemanticProviderManager
+from .settings import AEMSettingsStore
+from .websocket import (
+    DATA_SEMANTIC_PROVIDER,
+    DATA_SETTINGS,
+    async_register_websocket_commands,
+)
+
 PANEL_URL_PATH = "assist-entity-manager"
 FRONTEND_BASE_URL = "/assist_entity_manager"
 MODULE_URL = f"{FRONTEND_BASE_URL}/assist-entity-manager.js?v={VERSION}"
@@ -21,10 +28,24 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up static frontend resources."""
+    """Set up static resources and AEM-owned runtime services."""
     await hass.http.async_register_static_paths(
         [StaticPathConfig(FRONTEND_BASE_URL, str(FRONTEND_DIR), False)]
     )
+
+    settings = AEMSettingsStore(hass)
+    await settings.async_load()
+
+    # No production Semantic Control adapter is registered here yet. The actual
+    # external contract belongs to the separate Assist Semantic Control project
+    # and must be agreed before AEM binds a concrete adapter to it.
+    provider = SemanticProviderManager()
+
+    hass.data[DOMAIN] = {
+        DATA_SETTINGS: settings,
+        DATA_SEMANTIC_PROVIDER: provider,
+    }
+    async_register_websocket_commands(hass)
     return True
 
 
