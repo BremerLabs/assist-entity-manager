@@ -44,6 +44,7 @@ Branch: `feature/semantic-control-provider-prep`
 - Bumped the development branch to AEM `1.1.0` and added `websocket_api` as a manifest dependency.
 - Added `SEMANTIC_CONTROL_PROVIDER_CONTRACT.md`.
 - Added pure adapter-boundary tests using controlled test doubles only.
+- Added the unit suite to the existing validation workflow.
 
 ## Architecture decisions
 
@@ -92,16 +93,22 @@ Tests added:
 - unknown provider state is not blindly accepted
 - enabled reads/writes delegate through the adapter
 
-Actual execution results will be updated here after local syntax/unit execution and branch CI are run.
+Actual results:
+
+- Local stdlib unit run: **8 tests passed**.
+- Local Python syntax compilation for the pure provider module/tests: **passed**.
+- GitHub Actions run `32184689335`:
+  - `unit`: **passed**
+  - `hassfest`: **passed**
+  - `hacs`: **passed**
+- The WebSocket admin-decorator order was checked against current Home Assistant Core usage and corrected before the successful Hassfest run.
 
 ## Open work
 
-- Run the new unit tests and syntax checks.
-- Run HACS and Hassfest validation for the branch and fix any reported issue.
 - Test the hidden admin/developer menu against a real Home Assistant frontend/runtime.
+- Verify the AEM-owned setting persists across a real Home Assistant restart/reload, in addition to the storage implementation and unit-level provider gating already checked.
 - Once Assist Semantic Control defines a real public contract, implement a concrete AEM-side adapter against that contract.
 - Only then add schema-driven Semantic Control entity controls to the main AEM entity/details UI.
-- Consider adding automated unit-test execution to CI after deciding the repository's test dependency strategy.
 
 ## Not verified
 
