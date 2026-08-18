@@ -8,11 +8,12 @@
   "dependencies": [
     "frontend",
     "http",
-    "panel_custom"
+    "panel_custom",
+    "websocket_api"
   ],
   "documentation": "https://github.com/BremerLabs/assist-entity-manager",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/BremerLabs/assist-entity-manager/issues",
   "single_config_entry": true,
-  "version": "1.0.1"
+  "version": "1.1.0"
 }
