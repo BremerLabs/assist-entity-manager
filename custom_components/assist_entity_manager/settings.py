@@ -6,7 +6,7 @@ from typing import Any, TypedDict
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from . import DOMAIN
+from .const import DOMAIN
 
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.settings"
