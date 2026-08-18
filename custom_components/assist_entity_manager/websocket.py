@@ -41,10 +41,10 @@ async def _settings_payload(hass: HomeAssistant) -> dict[str, Any]:
     }
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {vol.Required("type"): "assist_entity_manager/settings/get"}
 )
-@websocket_api.require_admin
 @websocket_api.async_response
 async def websocket_get_settings(
     hass: HomeAssistant,
@@ -55,13 +55,13 @@ async def websocket_get_settings(
     connection.send_result(msg["id"], await _settings_payload(hass))
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "assist_entity_manager/settings/update",
         vol.Required("use_semantic_control_extensions"): bool,
     }
 )
-@websocket_api.require_admin
 @websocket_api.async_response
 async def websocket_update_settings(
     hass: HomeAssistant,
