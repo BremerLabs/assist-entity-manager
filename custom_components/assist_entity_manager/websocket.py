@@ -8,7 +8,7 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant
 
-from . import DOMAIN
+from .const import DOMAIN
 from .semantic_provider import SemanticProviderManager
 from .settings import AEMSettingsStore
 
