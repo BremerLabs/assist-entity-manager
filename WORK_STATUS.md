@@ -2,173 +2,149 @@
 
 ## Scope
 
-Prepare Assist Entity Manager (AEM) for a future, optional Assist Semantic Control provider without implementing or inventing the external Semantic Control API.
+Prepare Assist Entity Manager (AEM) for a future, optional Assist Semantic Control provider without inventing the external Semantic Control API, while keeping existing AEM entity management reliable.
 
-## Verified current state before this work
+## Verified baseline
 
-Repository tree was inspected recursively.
-
-- No `AGENTS.md` exists in the repository.
-- No previous `WORK_STATUS.md` existed.
-- No dedicated project/feature specification was present beyond README files and the existing code/workflow.
-- No `tests/` directory or unit/integration test suite existed.
-- CI contained HACS validation and Home Assistant Hassfest validation only.
-- AEM backend registered static frontend resources and the sidebar panel but exposed no AEM-owned WebSocket commands.
-- The config flow was a single empty/single-instance setup flow.
-- Existing AEM UI preferences/change-watch/view state were browser `localStorage`/`sessionStorage` data.
-- Home Assistant registry/state WebSocket APIs were already the source for areas, devices, entities, states, aliases and voice-assistant exposure data.
-- The English and German frontend implementations are large separate language bundles loaded by the small common loader.
-- No Assist Semantic Control production integration, provider adapter or external contract exists in this repository.
+- No `AGENTS.md`, `WORK_STATUS.md`, project specification or tests existed before this work.
+- AEM originally had no AEM-owned WebSocket API.
+- Home Assistant remains the source of truth for areas, devices, entities, states, aliases and assistant exposure.
+- The English and German frontends are still separate large bundles loaded by the common loader.
+- No production Assist Semantic Control integration or final external contract exists in this repository.
 
 ## Completed Semantic Control preparation
 
-Original branch: `feature/semantic-control-provider-prep` (merged as PR #1)
+Merged as PR #1.
 
-- Added `semantic_provider.py` as a narrow AEM-internal optional-provider boundary.
-- Added a versioned **internal AEM adapter API** (`1`). This is not an external Semantic Control API version.
-- Added normalized safe provider states: disabled, not available, compatible, incompatible, unavailable, incomplete.
-- Added explicit containment for adapter failure and incompatible internal adapter versions.
-- Added provider read/write gates that refuse access when the AEM Semantic Control extension switch is off.
-- Added AEM-owned persistent settings storage using Home Assistant `Store`.
-- Persisted only the AEM setting `use_semantic_control_extensions`; no Semantic Control policy data is duplicated.
-- Added admin-only AEM WebSocket settings commands:
-  - `assist_entity_manager/settings/get`
-  - `assist_entity_manager/settings/update`
-- The commands above are AEM's own administration interface. They are not claimed to be Semantic Control endpoints.
-- Added a hidden admin/developer panel in the common AEM sidebar loader:
-  - five clicks on the small AEM version label unlock it for the current frontend instance
-  - frontend also checks the current HA user admin flag
-  - backend WebSocket commands independently enforce Home Assistant admin permission
-  - a persistent switch enables/disables AEM's future Semantic Control extensions
-  - no provider refresh button is exposed because no real external refresh contract exists yet
-- Added `SEMANTIC_CONTROL_PROVIDER_CONTRACT.md`.
-- Added pure adapter-boundary tests using controlled test doubles only.
-- Added the unit suite to the validation workflow.
+- Added the optional provider/adapter boundary.
+- Added persistent AEM setting `use_semantic_control_extensions`.
+- Added admin-only AEM settings WebSocket commands.
+- Added hidden admin/developer UI unlocked by five clicks on the AEM version label.
+- Added provider contract documentation and provider compatibility tests.
+- No Semantic Control API, service, event, storage key or capability field was invented.
 
-## Follow-up patch in progress
+## Completed AEM 1.1.1 follow-up
 
-Branch: `fix/auto-refresh-and-english-localization`
+Merged as PR #2.
 
-Reason: after deleting temporary demo/template entities in Home Assistant, an already-open AEM view could continue showing the previously loaded entities until a manual refresh/reload. This matches the existing frontend behavior: AEM intentionally loaded registry/entity data once and did not subscribe to registry changes.
+- Added automatic refresh for entity/device/area registry changes and entity create/remove state events.
+- Alias/conflict data is invalidated and reloaded after relevant changes.
+- Added English compatibility cleanup for reported mixed German/English UI strings.
+- Added frontend regression tests and JavaScript syntax validation.
+- Unit tests, JavaScript syntax, Hassfest and HACS passed.
+
+## AEM 1.1.2 follow-up in progress
+
+Branch: `fix/orphaned-entities-and-english-guard`
+PR: #4
+
+### Verified root cause
+
+`config/entity_registry/list_for_display` may still return a non-disabled Entity Registry entry even when that entity no longer has a current Home Assistant state. AEM previously built its visible list from the union of current states and registry entries, so stale Template/helper entries could remain visible after a correct refresh.
+
+### Current 1.1.2 design
+
+The earlier plan to silently hide registry-only entities was replaced after deciding that users need a safe way to clean these stale entries instead of merely concealing them.
 
 Implemented:
 
-- Bumped development patch version to `1.1.1`.
-- Added debounced automatic AEM data refresh for:
-  - `entity_registry_updated`
-  - `device_registry_updated`
-  - `area_registry_updated`
-  - entity creation/removal observed through `state_changed` where old or new state is missing
-- Refresh resets the alias index as well as the primary loaded-data flag before reloading, so alias/conflict data cannot remain stale after registry changes.
-- Subscriptions are cleaned up when the card/panel disconnects and are rebound when the Home Assistant connection changes.
-- Added an English-only compatibility cleanup layer in the small common loader for the mixed German/English strings already observed in the `en` bundle, including the reported header/count/action/settings/backup/alias-placeholder cases.
-- The cleanup is scoped to the English bundle only and observes rerenders so fixes remain applied when the large language bundle replaces its shadow DOM.
-- Added regression tests for refresh hooks and the reported English fallback fixes.
-- Added Node syntax checks for all three frontend JavaScript files to CI.
+- registry-only entries are marked as `orphaned` in AEM when no current `hass.states` entry exists
+- orphaned entities remain manageable and are visually marked as `Verwaist` / `Orphaned`
+- every entity detail gets an entity-cleanup section
+- for orphaned entities the action `Restlos aus Home Assistant löschen` / `Permanently remove from Home Assistant` is enabled
+- destructive cleanup requires explicit user confirmation
+- active entities show the cleanup section but the destructive action is disabled and explains that the actual integration/YAML/helper source must be removed first
+- added AEM-owned admin-only WebSocket command `assist_entity_manager/entity/remove_orphan`
+- backend independently verifies that the Entity Registry entry exists and that no current Home Assistant state exists
+- backend refuses active entities even if the frontend is bypassed
+- successful cleanup removes the stale Entity Registry entry with Home Assistant's registry API and refreshes AEM
+- the cleanup command does not remove devices, config entries, integrations, YAML files or helpers
+- existing automatic registry/state refresh from 1.1.1 remains active
 
-## Architecture decisions
+### Important semantics of “permanently remove”
 
-### Source of truth
+For a truly orphaned Entity Registry entry, AEM can remove the registry record completely.
 
-- Home Assistant: areas, devices, entities, registry metadata, states, standard attributes.
-- Future Assist Semantic Control: AI-specific metadata, capabilities, policies and current provider-owned values.
-- AEM: management UI, adapter/facade, AEM-only compatibility settings.
+For an active source-managed entity, AEM cannot truthfully guarantee permanent deletion because its integration, YAML definition or helper can recreate the entity. Such entities must first be removed at their real source. AEM therefore deliberately refuses destructive registry deletion while an active state exists.
 
-AEM must not persist a second authoritative copy of future Semantic Control policy data.
+### English localization
 
-### No invented Semantic Control API
+- additional verified English leftovers are handled, including `Schloss` → `Lock` and `Wasser` → `Water`
+- mixed external-change descriptions are corrected in the English runtime only
+- German UI remains unchanged
 
-No production adapter is registered. The manager therefore reports that no compatible AEM adapter is currently available when the extension switch is on.
+### Version
 
-The internal adapter protocol is only an AEM implementation seam. It deliberately does not prescribe external service names, WebSocket paths, events, storage keys, integration domains or schema field names.
+- target version remains `1.1.2`
+- backend/manifest/runtime version is `1.1.2`
 
-### Dynamic capabilities/schema
+## Source-of-truth decisions
 
-The normalized provider snapshot can carry capability identifiers and an opaque schema mapping without a hard-coded Semantic Control field list. A concrete future adapter is responsible for validating the real external contract before returning a `compatible` snapshot.
+- Home Assistant: areas, devices, entities, registry metadata, states and standard attributes
+- future Assist Semantic Control: AI-specific metadata, capabilities and policies
+- AEM: management UI, provider facade and AEM-only settings
 
-### Disabled mode
+AEM must not persist a second authoritative copy of Semantic Control policy data.
 
-When `use_semantic_control_extensions` is false:
+## Safety decisions
 
-- provider status does not call the adapter
-- provider entity reads are blocked before adapter access
-- provider entity writes are blocked before adapter access
-- the current UI exposes no Semantic-Control-specific entity fields
-- the Semantic Control integration itself is not modified
+- hidden UI is not a security boundary
+- Semantic Control settings and orphan cleanup are protected server-side with Home Assistant admin checks
+- AEM does not delete an active source-managed entity from the Entity Registry
+- no automatic bulk orphan deletion is performed
+- every orphan cleanup is explicit and confirmed by the user
 
-### Hidden admin UI
+## Tests
 
-The five-click trigger is only a discoverability mechanism, not a security boundary. The AEM backend enforces admin access to the persistent setting.
+Existing coverage:
 
-### Live Home Assistant data
+- provider unavailable/disabled/compatible/incompatible/outage cases
+- unknown capability and optional-field handling
+- registry refresh subscriptions
+- entity create/remove refresh
+- alias-index invalidation
+- English fallback checks
+- JavaScript syntax validation
 
-AEM remains a registry/state consumer, not a second entity store. Automatic refresh reacts to Home Assistant registry changes and entity creation/removal; ordinary state value changes do not trigger expensive full registry reloads.
+1.1.2 coverage now additionally checks:
 
-## Tests and actual results
+- orphaned entries are marked instead of silently filtered
+- cleanup UI is installed for both German and English bundles
+- cleanup UI requires explicit confirmation
+- AEM uses `assist_entity_manager/entity/remove_orphan`
+- backend command is admin-only
+- backend refuses an entity while `hass.states` still contains it
+- backend removes only the Entity Registry entry for a verified orphan
 
-Semantic provider tests:
+Previously verified CI:
 
-- AEM provider manager without a provider
-- disabled provider path does not call adapter
-- compatible provider snapshot with unknown/future capability and schema property
-- missing optional schema/capabilities are not fabricated
-- incompatible internal adapter API version
-- provider exception/outage containment
-- unknown provider state is not blindly accepted
-- enabled reads/writes delegate through the adapter
+- provider preparation: unit, Hassfest and HACS passed
+- v1.1.1 follow-up: unit/regression tests, JavaScript syntax, Hassfest and HACS passed
 
-Previously verified results:
-
-- Local stdlib unit run: **8 tests passed**.
-- Local Python syntax compilation for the pure provider module/tests: **passed**.
-- GitHub Actions run `32184689335`: `unit`, `hassfest`, and `hacs` all **passed**.
-
-Follow-up regression coverage added:
-
-- registry events schedule an AEM refresh
-- entity creation/removal state events schedule a refresh
-- alias index is invalidated before reload
-- reported English fallback strings are covered
-- English cleanup is scoped to the English bundle
-- CI checks JavaScript syntax with Node for common, English, and German frontend files
-
-Actual CI results for the follow-up branch are pending until the branch PR run completes.
+Current v1.1.2 CI must be rechecked after the cleanup changes.
 
 ## Open work
 
-- Run the follow-up branch CI and correct any failure.
-- Test automatic removal/update behavior in a real Home Assistant runtime.
-- Test the hidden admin/developer menu against a real Home Assistant frontend/runtime.
-- Verify the AEM-owned setting persists across a real Home Assistant restart/reload.
-- Once Assist Semantic Control defines a real public contract, implement a concrete AEM-side adapter against that contract.
-- Only then add schema-driven Semantic Control entity controls to the main AEM entity/details UI.
-- Long term, replace the two large embedded-string language bundles with a shared translation-key architecture; the current English compatibility cleanup is deliberately a contained patch, not the desired final localization architecture.
+- run and verify updated PR #4 CI
+- test orphan marking and cleanup against the user's real Home Assistant instance
+- verify successful removal of the old demo/template registry leftovers
+- test hidden admin/developer menu and persistent Semantic Control switch in real HA
+- when Assist Semantic Control defines its real contract, implement the concrete AEM adapter and schema-driven UI
+- long term, replace embedded language bundles with a shared translation-key architecture
 
 ## Not verified
 
-- The future Assist Semantic Control integration domain is not defined here and is intentionally not guessed.
-- The future external provider transport/API names are unknown.
-- The future external contract-version format and compatibility rules are unknown.
-- The future schema/capability wire format is unknown.
-- A concrete refresh/invalidation mechanism for Semantic Control itself is unknown.
-- Full runtime behavior of the new admin panel and the new registry subscriptions still require real Home Assistant testing.
+- future Semantic Control integration domain and external transport/API
+- future contract-version and capability wire format
+- Semantic Control refresh/invalidation mechanism
+- real HA runtime behavior of the new orphan cleanup until installed and tested
 
 ## Risks
 
-- The current AEM frontend uses two large language-specific bundles with embedded strings. Future dynamic provider fields should avoid duplicating provider logic across both bundles if possible.
-- The English compatibility cleanup covers the mixed strings already observed/reported, but a future translation refactor is safer than indefinitely expanding replacement rules.
-- Provider schema rendering must be designed carefully once the real schema exists; accepting an unknown field identifier is different from accepting an unknown/unsafe schema contract version.
-- The production adapter must not bind to undocumented internal objects of Assist Semantic Control unless both projects explicitly accept that compatibility risk.
-- AEM's persistent Semantic Control switch is installation-level AEM state; this is intentional. Semantic Control policy values must remain provider-owned.
+- an integration that temporarily lacks a state may look orphaned even though it can recover later; cleanup therefore remains manual and explicitly confirmed
+- removing the source after deleting an active entity is essential; otherwise the source may recreate it
+- English compatibility replacement is a containment patch, not the desired long-term localization architecture
 
-## Required interface from Assist Semantic Control project
+## Required interface from Assist Semantic Control
 
-See `SEMANTIC_CONTROL_PROVIDER_CONTRACT.md`. In short, the future project needs to agree a real supported mechanism for:
-
-- provider detection
-- explicit contract compatibility/version information
-- capability/schema retrieval
-- provider-owned entity-data reads
-- provider-owned mutable entity-data writes
-- structured errors
-- refresh/invalidation or equivalent freshness rules
+See `SEMANTIC_CONTROL_PROVIDER_CONTRACT.md` for the still-to-be-agreed provider detection, compatibility/version information, capability/schema retrieval, provider-owned reads/writes, structured errors and freshness/invalidations.

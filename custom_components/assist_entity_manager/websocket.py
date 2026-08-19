@@ -7,6 +7,8 @@ import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 from .semantic_provider import SemanticProviderManager
@@ -78,6 +80,66 @@ async def websocket_update_settings(
     connection.send_result(msg["id"], await _settings_payload(hass))
 
 
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "assist_entity_manager/entity/remove_orphan",
+        vol.Required("entity_id"): cv.entity_id,
+    }
+)
+@websocket_api.async_response
+async def websocket_remove_orphan_entity(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Permanently remove a state-less entity registry entry.
+
+    AEM deliberately refuses to remove an entity that currently has a Home
+    Assistant state. Active entities are owned by their source integration,
+    YAML configuration or helper implementation and would otherwise be likely
+    to re-register themselves. This command is therefore a registry-cleanup
+    operation for stale/orphaned entries, not a generic integration remover.
+    """
+    entity_id = msg["entity_id"]
+    registry = er.async_get(hass)
+    entry = registry.async_get(entity_id)
+
+    if entry is None:
+        connection.send_error(
+            msg["id"],
+            "entity_not_found",
+            "The entity registry entry does not exist.",
+        )
+        return
+
+    if hass.states.get(entity_id) is not None:
+        connection.send_error(
+            msg["id"],
+            "entity_active",
+            (
+                "The entity is currently active. Remove or disable its source "
+                "integration, YAML definition or helper first. AEM will not "
+                "delete an active source-managed entity registry entry."
+            ),
+        )
+        return
+
+    device_id = entry.device_id
+    platform = entry.platform
+    registry.async_remove(entity_id)
+
+    connection.send_result(
+        msg["id"],
+        {
+            "entity_id": entity_id,
+            "removed": True,
+            "device_id": device_id,
+            "platform": platform,
+        },
+    )
+
+
 def async_register_websocket_commands(hass: HomeAssistant) -> None:
     """Register AEM WebSocket commands once per Home Assistant runtime."""
     runtime = _runtime(hass)
@@ -86,4 +148,5 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
 
     websocket_api.async_register_command(hass, websocket_get_settings)
     websocket_api.async_register_command(hass, websocket_update_settings)
+    websocket_api.async_register_command(hass, websocket_remove_orphan_entity)
     runtime[DATA_WEBSOCKET_REGISTERED] = True
