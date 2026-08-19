@@ -1,4 +1,4 @@
 """Constants for Assist Entity Manager."""
 
 DOMAIN = "assist_entity_manager"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
