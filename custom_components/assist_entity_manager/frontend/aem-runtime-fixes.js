@@ -5,37 +5,10 @@ function hasCurrentState(instance, entityId) {
   return Boolean(instance?._hass?.states) && Object.prototype.hasOwnProperty.call(instance._hass.states, entityId);
 }
 
-function filterOrphanedEntities(instance) {
+function markOrphanedEntities(instance) {
   if (!Array.isArray(instance?._entities) || !instance?._hass?.states) return;
-
-  const before = instance._entities.length;
-  instance._entities = instance._entities.filter((entity) =>
-    entity?.entityId && hasCurrentState(instance, entity.entityId)
-  );
-
-  if (instance._selected instanceof Set) {
-    const visibleIds = new Set(instance._entities.map((entity) => entity.entityId));
-    instance._selected = new Set(
-      [...instance._selected].filter((entityId) => visibleIds.has(entityId))
-    );
-  }
-
-  if (
-    instance._detailEntityId &&
-    !instance._entities.some((entity) => entity.entityId === instance._detailEntityId)
-  ) {
-    instance._detailEntityId = null;
-    instance._detailRegistry = null;
-    instance._detailLoading = false;
-    instance._detailError = "";
-  }
-
-  if (before !== instance._entities.length) {
-    instance._aliasIndexReady = false;
-    instance._spokenNameIndex = new Map();
-    instance._conflictGroupsCache = [];
-    instance._conflictEntityIds = new Set();
-    instance._conflictsByEntity = new Map();
+  for (const entity of instance._entities) {
+    entity.orphaned = Boolean(entity?.entityId) && !hasCurrentState(instance, entity.entityId);
   }
 }
 
@@ -56,9 +29,18 @@ function installEntityPresenceGuard(tagName) {
     });
 
     proto._processExternalChanges = function (...args) {
-      filterOrphanedEntities(this);
+      markOrphanedEntities(this);
       return originalProcessExternalChanges.apply(this, args);
     };
+
+    const originalRender = proto._render;
+    if (typeof originalRender === "function") {
+      proto._render = function (...args) {
+        const result = originalRender.apply(this, args);
+        queueMicrotask(() => applyEntityCleanupUi(this));
+        return result;
+      };
+    }
 
     refreshExistingInstances(tagName);
   });
@@ -85,6 +67,133 @@ function refreshExistingInstances(tagName) {
       }
     }
   });
+}
+
+function cleanupTexts(instance) {
+  const de = String(instance?._hass?.language || "").toLowerCase().startsWith("de");
+  return de
+    ? {
+        orphanBadge: "Verwaist",
+        title: "Entität aus Home Assistant entfernen",
+        orphanHelp: "Diese Entität hat keinen aktuellen Home-Assistant-State mehr. Der verwaiste Registry-Eintrag kann dauerhaft entfernt werden.",
+        activeHelp: "Diese Entität ist noch aktiv und wird von Home Assistant oder einer Integration verwaltet. Entferne zuerst die eigentliche Quelle; AEM löscht aktive Quell-Entitäten nicht blind aus der Registry.",
+        button: "Restlos aus Home Assistant löschen",
+        confirm: "Den verwaisten Registry-Eintrag wirklich dauerhaft aus Home Assistant löschen?",
+        deleting: "Wird gelöscht …",
+        error: "Die Entität konnte nicht gelöscht werden.",
+      }
+    : {
+        orphanBadge: "Orphaned",
+        title: "Remove entity from Home Assistant",
+        orphanHelp: "This entity no longer has a current Home Assistant state. The orphaned registry entry can be removed permanently.",
+        activeHelp: "This entity is still active and is managed by Home Assistant or an integration. Remove its actual source first; AEM will not blindly remove active source-managed entities from the registry.",
+        button: "Permanently remove from Home Assistant",
+        confirm: "Permanently remove this orphaned registry entry from Home Assistant?",
+        deleting: "Removing …",
+        error: "The entity could not be removed.",
+      };
+}
+
+function injectCleanupStyles(instance) {
+  const root = instance?.shadowRoot;
+  if (!root || root.querySelector("style[data-aem-cleanup-style]")) return;
+  const style = document.createElement("style");
+  style.dataset.aemCleanupStyle = "1";
+  style.textContent = `
+    .aem-orphan-badge{display:inline-flex;align-items:center;gap:4px;margin-left:7px;padding:2px 7px;border-radius:999px;background:color-mix(in srgb,var(--warning-color,#ff9800) 16%,transparent);border:1px solid color-mix(in srgb,var(--warning-color,#ff9800) 42%,transparent);color:var(--warning-color,#ff9800);font-size:10px;font-weight:700;vertical-align:middle}
+    .aem-cleanup-section{margin:18px 0 4px;padding:14px;border:1px solid color-mix(in srgb,var(--error-color,#e53935) 32%,var(--divider-color));border-radius:14px;background:color-mix(in srgb,var(--error-color,#e53935) 5%,var(--card-background-color,var(--ha-card-background)))}
+    .aem-cleanup-section strong,.aem-cleanup-section small{display:block}.aem-cleanup-section strong{font-size:13px}.aem-cleanup-section small{margin-top:5px;color:var(--secondary-text-color);font-size:10px;line-height:1.45}
+    .aem-cleanup-button{margin-top:12px;padding:9px 12px;border:1px solid var(--error-color,#e53935);border-radius:10px;background:var(--error-color,#e53935);color:#fff;font:inherit;font-size:11px;font-weight:700;cursor:pointer}.aem-cleanup-button:disabled{opacity:.38;cursor:not-allowed}
+    .aem-cleanup-error{margin-top:8px;color:var(--error-color,#e53935);font-size:10px}
+  `;
+  root.appendChild(style);
+}
+
+function markOrphanRow(instance, entityId, texts) {
+  const root = instance?.shadowRoot;
+  if (!root || !entityId) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    if (String(node.nodeValue || "").trim() !== entityId) continue;
+    const parent = node.parentElement;
+    if (!parent || parent.querySelector?.(".aem-orphan-badge")) continue;
+    const badge = document.createElement("span");
+    badge.className = "aem-orphan-badge";
+    badge.textContent = texts.orphanBadge;
+    parent.appendChild(badge);
+  }
+}
+
+function applyEntityCleanupUi(instance) {
+  if (!instance?.shadowRoot || !Array.isArray(instance._entities)) return;
+  markOrphanedEntities(instance);
+  injectCleanupStyles(instance);
+  const texts = cleanupTexts(instance);
+
+  for (const entity of instance._entities) {
+    if (entity.orphaned) markOrphanRow(instance, entity.entityId, texts);
+  }
+
+  const entityId = instance._detailEntityId;
+  const panel = instance.shadowRoot.querySelector(".detail-panel");
+  if (!entityId || !panel || panel.querySelector(".aem-cleanup-section")) return;
+
+  const entity = instance._entities.find((item) => item.entityId === entityId);
+  if (!entity) return;
+  const orphaned = Boolean(entity.orphaned);
+
+  const section = document.createElement("section");
+  section.className = "aem-cleanup-section";
+  section.innerHTML = `
+    <strong>${escapeRuntimeHtml(texts.title)}${orphaned ? ` <span class="aem-orphan-badge">${escapeRuntimeHtml(texts.orphanBadge)}</span>` : ""}</strong>
+    <small>${escapeRuntimeHtml(orphaned ? texts.orphanHelp : texts.activeHelp)}</small>
+    <button class="aem-cleanup-button" type="button" ${orphaned ? "" : "disabled"}>${escapeRuntimeHtml(texts.button)}</button>
+    <div class="aem-cleanup-error" hidden></div>
+  `;
+
+  const button = section.querySelector(".aem-cleanup-button");
+  const error = section.querySelector(".aem-cleanup-error");
+  button?.addEventListener("click", async () => {
+    if (!orphaned || button.disabled) return;
+    if (!window.confirm(`${texts.confirm}\n\n${entityId}`)) return;
+
+    button.disabled = true;
+    button.textContent = texts.deleting;
+    error.hidden = true;
+    error.textContent = "";
+
+    try {
+      await instance._callWS({
+        type: "assist_entity_manager/entity/remove_orphan",
+        entity_id: entityId,
+      });
+      instance._detailEntityId = null;
+      instance._detailRegistry = null;
+      instance._detailLoading = false;
+      instance._detailError = "";
+      instance._loaded = false;
+      instance._aliasIndexReady = false;
+      instance._aliasIndexError = "";
+      await instance._load?.();
+    } catch (err) {
+      error.textContent = err?.message || texts.error;
+      error.hidden = false;
+      button.disabled = false;
+      button.textContent = texts.button;
+    }
+  });
+
+  panel.appendChild(section);
+}
+
+function escapeRuntimeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 const ENGLISH_EXACT = new Map([
