@@ -15,5 +15,5 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/BremerLabs/assist-entity-manager/issues",
   "single_config_entry": true,
-  "version": "1.1.1"
+  "version": "1.1.2"
 }
