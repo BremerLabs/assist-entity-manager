@@ -68,13 +68,17 @@ class FrontendLoaderRegressionTests(unittest.TestCase):
             "Water",
             "Warns about very generic spoken names",
             "Home Assistant now reports this entity as not supported.",
+            '"von", "of"',
+            '"sichtbar", "visible"',
+            '"Sperren", "Block"',
+            '"Freigeben", "Expose"',
         )
         combined = self.loader_source + self.runtime_source
         for text in expected:
             self.assertIn(text, combined)
 
     def test_runtime_fix_version_matches_patch_release(self) -> None:
-        self.assertIn('AEM_RUNTIME_FIX_VERSION = "1.1.2"', self.runtime_source)
+        self.assertIn('AEM_RUNTIME_FIX_VERSION = "1.1.3"', self.runtime_source)
 
 
 if __name__ == "__main__":
