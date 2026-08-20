@@ -1,5 +1,5 @@
-/* Assist Entity Manager runtime compatibility fixes – v1.1.2 */
-const AEM_RUNTIME_FIX_VERSION = "1.1.2";
+/* Assist Entity Manager runtime compatibility fixes – v1.1.3 */
+const AEM_RUNTIME_FIX_VERSION = "1.1.3";
 
 function hasCurrentState(instance, entityId) {
   return Boolean(instance?._hass?.states) && Object.prototype.hasOwnProperty.call(instance._hass.states, entityId);
@@ -206,6 +206,8 @@ const ENGLISH_EXACT = new Map([
   ["Schloss", "Lock"],
   ["Wasser", "Water"],
   ["ausgeblendet", "hidden"],
+  ["von", "of"],
+  ["sichtbar", "visible"],
 ]);
 
 const ENGLISH_SUBSTRINGS = [
@@ -222,13 +224,20 @@ const ENGLISH_SUBSTRINGS = [
 
 function translateEnglishText(value) {
   let text = String(value ?? "");
-  if (ENGLISH_EXACT.has(text)) text = ENGLISH_EXACT.get(text);
+  const leading = text.match(/^\s*/)?.[0] || "";
+  const trailing = text.match(/\s*$/)?.[0] || "";
+  const trimmed = text.trim();
+
+  if (ENGLISH_EXACT.has(trimmed)) {
+    text = `${leading}${ENGLISH_EXACT.get(trimmed)}${trailing}`;
+  }
+
   for (const [from, to] of ENGLISH_SUBSTRINGS) text = text.replaceAll(from, to);
 
   text = text
-    .replace(/\b(\d+) von (\d+) exposed\b/g, "$1 of $2 exposed")
-    .replace(/\b(\d+) von (\d+)\b/g, "$1 of $2")
-    .replace(/\b(\d+) sichtbar\b/g, "$1 visible")
+    .replace(/\b(\d+)\s+von\s+(\d+)\s+exposed\b/g, "$1 of $2 exposed")
+    .replace(/\b(\d+)\s+von\s+(\d+)\b/g, "$1 of $2")
+    .replace(/\b(\d+)\s+sichtbar\b/g, "$1 visible")
     .replace(/\b(\d+) Doppelung\b/g, "$1 duplicate")
     .replace(/\b(\d+) Doppelungen\b/g, "$1 duplicates")
     .replace(/exposure was changed outside Assist Manager aktiviert\./g, "Exposure was enabled outside Assist Manager.")
@@ -260,6 +269,26 @@ function applyEnglishCleanup(instance) {
   }
 }
 
+function ensureEnglishCleanupObserver(instance) {
+  const root = instance?.shadowRoot;
+  if (!root) return;
+
+  applyEnglishCleanup(instance);
+  if (instance.__aemEnglishCleanupObserver) return;
+
+  const observer = new MutationObserver(() => {
+    queueMicrotask(() => applyEnglishCleanup(instance));
+  });
+  observer.observe(root, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: ["placeholder", "title", "aria-label"],
+  });
+  instance.__aemEnglishCleanupObserver = observer;
+}
+
 function installEnglishCleanup() {
   customElements.whenDefined("assist-entity-manager-en").then(() => {
     const ElementClass = customElements.get("assist-entity-manager-en");
@@ -277,7 +306,7 @@ function installEnglishCleanup() {
     if (typeof originalRender === "function") {
       proto._render = function (...args) {
         const result = originalRender.apply(this, args);
-        queueMicrotask(() => applyEnglishCleanup(this));
+        queueMicrotask(() => ensureEnglishCleanupObserver(this));
         return result;
       };
     }
@@ -292,18 +321,24 @@ function installEnglishCleanup() {
       };
     }
 
-    for (const root of collectOpenShadowRoots(document)) {
-      for (const instance of root.querySelectorAll?.("assist-entity-manager-en") || []) {
-        applyEnglishCleanup(instance);
+    const applyToExisting = () => {
+      for (const root of collectOpenShadowRoots(document)) {
+        for (const instance of root.querySelectorAll?.("assist-entity-manager-en") || []) {
+          ensureEnglishCleanupObserver(instance);
+        }
       }
-    }
+    };
+
+    applyToExisting();
+    window.setTimeout(applyToExisting, 250);
+    window.setTimeout(applyToExisting, 1000);
   });
 }
 
 function updateVisibleVersionLabels() {
   for (const root of collectOpenShadowRoots(document)) {
     for (const button of root.querySelectorAll?.(".aem-version-trigger") || []) {
-      if (/^AEM\s+1\.1\.1$/.test(button.textContent?.trim() || "")) {
+      if (/^AEM\s+1\.1\.[12]$/.test(button.textContent?.trim() || "")) {
         button.textContent = `AEM ${AEM_RUNTIME_FIX_VERSION}`;
       }
     }
