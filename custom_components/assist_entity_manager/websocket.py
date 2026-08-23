@@ -140,6 +140,80 @@ async def websocket_remove_orphan_entity(
     )
 
 
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "assist_entity_manager/entity/update_assignment",
+        vol.Required("entity_id"): cv.entity_id,
+        vol.Optional("area_id"): vol.Any(str, None),
+        vol.Optional("device_id"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def websocket_update_entity_assignment(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update the HA registry assignment fields AEM exposes in the detail panel."""
+    if "area_id" not in msg and "device_id" not in msg:
+        connection.send_error(
+            msg["id"],
+            "missing_assignment",
+            "An area_id or device_id must be provided.",
+        )
+        return
+
+    registry = er.async_get(hass)
+    entity_id = msg["entity_id"]
+    entry = registry.async_get(entity_id)
+
+    if entry is None:
+        connection.send_error(
+            msg["id"],
+            "entity_not_found",
+            "The entity registry entry does not exist.",
+        )
+        return
+
+    changes: dict[str, Any] = {}
+
+    if "area_id" in msg:
+        from homeassistant.helpers import area_registry as ar
+
+        area_id = msg["area_id"]
+        if (
+            area_id is not None
+            and ar.async_get(hass).async_get_area(area_id) is None
+        ):
+            connection.send_error(
+                msg["id"],
+                "area_not_found",
+                "The area registry entry does not exist.",
+            )
+            return
+        changes["area_id"] = area_id
+
+    if "device_id" in msg:
+        from homeassistant.helpers import device_registry as dr
+
+        device_id = msg["device_id"]
+        if (
+            device_id is not None
+            and dr.async_get(hass).async_get(device_id) is None
+        ):
+            connection.send_error(
+                msg["id"],
+                "device_not_found",
+                "The device registry entry does not exist.",
+            )
+            return
+        changes["device_id"] = device_id
+
+    updated = registry.async_update_entity(entity_id, **changes)
+    connection.send_result(msg["id"], updated.extended_dict)
+
+
 def async_register_websocket_commands(hass: HomeAssistant) -> None:
     """Register AEM WebSocket commands once per Home Assistant runtime."""
     runtime = _runtime(hass)
@@ -149,4 +223,5 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_get_settings)
     websocket_api.async_register_command(hass, websocket_update_settings)
     websocket_api.async_register_command(hass, websocket_remove_orphan_entity)
+    websocket_api.async_register_command(hass, websocket_update_entity_assignment)
     runtime[DATA_WEBSOCKET_REGISTERED] = True

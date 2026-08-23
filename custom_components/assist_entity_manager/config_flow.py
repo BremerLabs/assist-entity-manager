@@ -5,7 +5,7 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 
-from . import DOMAIN
+from .const import DOMAIN
 
 
 class AssistEntityManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):

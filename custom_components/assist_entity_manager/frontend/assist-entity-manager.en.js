@@ -41,6 +41,9 @@ class AssistEntityManager extends HTMLElement {
     this._aliasSaving = false;
     this._aliasError = "";
     this._aliasSuccess = "";
+    this._assignmentSaving = "";
+    this._assignmentError = "";
+    this._assignmentSuccess = "";
     this._aliasIndexReady = false;
     this._aliasIndexLoading = false;
     this._aliasIndexError = "";
@@ -1021,6 +1024,33 @@ class AssistEntityManager extends HTMLElement {
     );
   }
 
+  _deviceAssignmentName(device) {
+    if (!device) return "";
+    return (
+      device.name ||
+      device.name_by_user ||
+      device.model ||
+      device.manufacturer ||
+      ""
+    );
+  }
+
+  _deviceAssignmentOptions(areaId) {
+    return [...this._devices.values()]
+      .filter((device) => !areaId || device.area_id === areaId)
+      .sort((a, b) =>
+        this._deviceAssignmentName(a).localeCompare(
+          this._deviceAssignmentName(b),
+          this._hass?.language || "en",
+          { sensitivity: "base" }
+        )
+      )
+      .map((device) => ({
+        value: device.id,
+        label: this._deviceAssignmentName(device) || device.id,
+      }));
+  }
+
   _domainIcon(domain) {
     const icons = {
       light: "mdi:lightbulb-outline",
@@ -1720,6 +1750,8 @@ class AssistEntityManager extends HTMLElement {
     this._detailError = "";
     this._aliasError = "";
     this._aliasSuccess = "";
+    this._assignmentError = "";
+    this._assignmentSuccess = "";
     this._detailLoading = true;
     this._render();
 
@@ -1756,6 +1788,8 @@ class AssistEntityManager extends HTMLElement {
     this._detailError = "";
     this._aliasError = "";
     this._aliasSuccess = "";
+    this._assignmentError = "";
+    this._assignmentSuccess = "";
     this._render();
   }
 
@@ -2132,8 +2166,45 @@ class AssistEntityManager extends HTMLElement {
 
             <div class="detail-section">
               <h3>Assignment</h3>
-              ${this._detailItem("Area", entity.areaName || "No area")}
-              ${this._detailItem("Device", entity.deviceName || "No device")}
+              ${this._assignmentSelect(
+                "Area",
+                "detail-area-select",
+                entity.areaId,
+                "No area",
+                [...this._areas.values()]
+                  .sort((a, b) =>
+                    (a.name || a.area_id || "").localeCompare(
+                      b.name || b.area_id || "",
+                      this._hass?.language || "en",
+                      { sensitivity: "base" }
+                    )
+                  )
+                  .map((area) => ({
+                    value: area.area_id,
+                    label: area.name || area.area_id,
+                  }))
+              )}
+              ${this._assignmentSelect(
+                "Device",
+                "detail-device-select",
+                entity.deviceId,
+                "No device",
+                this._deviceAssignmentOptions(entity.areaId)
+              )}
+              ${
+                this._assignmentError
+                  ? `<div class="assignment-feedback error-text">${this._escape(
+                      this._assignmentError
+                    )}</div>`
+                  : ""
+              }
+              ${
+                this._assignmentSuccess
+                  ? `<div class="assignment-feedback success-text">${this._escape(
+                      this._assignmentSuccess
+                    )}</div>`
+                  : ""
+              }
               ${this._detailItem("Manufacturer", manufacturer)}
               ${this._detailItem("Model", model)}
               ${this._detailItem("Model ID", modelId)}
@@ -2356,6 +2427,98 @@ class AssistEntityManager extends HTMLElement {
 
     if (!Number.isInteger(index) || index < 0 || index >= current.length) return;
     this._saveAliases(current.filter((_alias, aliasIndex) => aliasIndex !== index));
+  }
+
+  _assignmentSelect(label, id, selectedValue, emptyLabel, options) {
+    const saving = Boolean(this._assignmentSaving);
+    return `
+      <label class="detail-item detail-select-item" for="${this._escapeAttr(id)}">
+        <span>${this._escape(label)}</span>
+        <select
+          id="${this._escapeAttr(id)}"
+          ${this._detailLoading || saving ? "disabled" : ""}
+        >
+          <option value="" ${selectedValue ? "" : "selected"}>${this._escape(emptyLabel)}</option>
+          ${(options || [])
+            .map(
+              (option) => `
+                <option value="${this._escapeAttr(option.value)}" ${
+                  selectedValue === option.value ? "selected" : ""
+                }>${this._escape(option.label)}</option>
+              `
+            )
+            .join("")}
+        </select>
+      </label>
+    `;
+  }
+
+  async _saveEntityAssignment(field, value) {
+    if (!this._detailEntityId || this._detailLoading || this._assignmentSaving) return;
+
+    const entity = this._entities.find(
+      (item) => item.entityId === this._detailEntityId
+    );
+    if (!entity) return;
+
+    const fieldName = field === "device" ? "device_id" : "area_id";
+    const currentValue = field === "device" ? entity.deviceId : entity.areaId;
+    const nextValue = value || "";
+    if (nextValue === (currentValue || "")) return;
+    const nextDevice =
+      field === "device" && nextValue ? this._devices.get(nextValue) : null;
+    const assignmentChanges = {
+      [fieldName]: nextValue || null,
+      ...(nextDevice?.area_id ? { area_id: nextDevice.area_id } : {}),
+    };
+
+    this._assignmentSaving = field;
+    this._assignmentError = "";
+    this._assignmentSuccess = "";
+    this._render();
+
+    try {
+      const result = await this._callWS({
+        type: "assist_entity_manager/entity/update_assignment",
+        entity_id: this._detailEntityId,
+        ...assignmentChanges,
+      });
+
+      this._detailRegistry = {
+        ...(this._detailRegistry || {}),
+        ...(result || {}),
+      };
+
+      const savedDeviceId =
+        this._detailRegistry?.device_id ??
+        this._detailRegistry?.di ??
+        (field === "device" ? nextValue : entity.deviceId) ??
+        "";
+      const explicitAreaId =
+        this._detailRegistry?.area_id ??
+        this._detailRegistry?.ai ??
+        (field === "area" ? nextValue : "") ??
+        "";
+      const savedDevice = savedDeviceId ? this._devices.get(savedDeviceId) : undefined;
+      const savedAreaId = explicitAreaId || savedDevice?.area_id || "";
+      const savedArea = savedAreaId ? this._areas.get(savedAreaId) : undefined;
+
+      entity.deviceId = savedDeviceId || "";
+      entity.deviceName = this._deviceName(savedDevice);
+      entity.areaId = savedAreaId || "";
+      entity.areaName = savedArea?.name || "";
+
+      this._sortEntities();
+      this._assignmentSuccess =
+        field === "device" ? "Device assignment saved." : "Area assignment saved.";
+    } catch (err) {
+      console.error("Assist Entity Manager: Assignment save", err);
+      this._assignmentError =
+        err?.message || "The assignment could not be saved.";
+    } finally {
+      this._assignmentSaving = "";
+      this._render();
+    }
   }
 
   _detailItem(label, value) {
@@ -4875,6 +5038,18 @@ class AssistEntityManager extends HTMLElement {
         this._closeDetails();
       }
     });
+
+    this.shadowRoot
+      .querySelector("#detail-area-select")
+      ?.addEventListener("change", (event) => {
+        this._saveEntityAssignment("area", event.target.value);
+      });
+
+    this.shadowRoot
+      .querySelector("#detail-device-select")
+      ?.addEventListener("change", (event) => {
+        this._saveEntityAssignment("device", event.target.value);
+      });
 
     this.shadowRoot
       .querySelectorAll(".detail-assistant-toggle")
@@ -7933,6 +8108,43 @@ class AssistEntityManager extends HTMLElement {
         font-size: 11px;
         font-weight: 700;
         overflow-wrap: anywhere;
+      }
+
+      .detail-select-item {
+        align-items: center;
+        grid-template-columns: minmax(74px, .55fr) minmax(140px, 1.45fr);
+        padding: 4px 0;
+      }
+
+      .detail-select-item span {
+        white-space: nowrap;
+      }
+
+      .detail-select-item select {
+        min-width: 0;
+        width: 100%;
+        justify-self: end;
+        height: 24px;
+        padding: 2px 40px 2px 9px;
+        border: 1px solid var(--divider-color);
+        border-radius: 8px;
+        background: var(--card-background-color);
+        color: var(--primary-text-color);
+        font-size: 11px;
+        font-weight: 650;
+        line-height: 1.2;
+        text-align: right;
+      }
+
+      .detail-select-item option {
+        padding-right: 32px;
+      }
+
+      .assignment-feedback {
+        grid-column: 1 / -1;
+        padding: 7px 0 4px;
+        font-size: 11px;
+        font-weight: 650;
       }
 
       .attributes {

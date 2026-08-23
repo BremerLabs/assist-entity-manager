@@ -8,6 +8,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 LOADER = ROOT / "custom_components" / "assist_entity_manager" / "frontend" / "assist-entity-manager.js"
 RUNTIME_FIXES = ROOT / "custom_components" / "assist_entity_manager" / "frontend" / "aem-runtime-fixes.js"
+EN_BUNDLE = ROOT / "custom_components" / "assist_entity_manager" / "frontend" / "assist-entity-manager.en.js"
+DE_BUNDLE = ROOT / "custom_components" / "assist_entity_manager" / "frontend" / "assist-entity-manager.de.js"
 WEBSOCKET = ROOT / "custom_components" / "assist_entity_manager" / "websocket.py"
 
 
@@ -18,6 +20,8 @@ class FrontendLoaderRegressionTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.loader_source = LOADER.read_text(encoding="utf-8")
         cls.runtime_source = RUNTIME_FIXES.read_text(encoding="utf-8")
+        cls.en_source = EN_BUNDLE.read_text(encoding="utf-8")
+        cls.de_source = DE_BUNDLE.read_text(encoding="utf-8")
         cls.websocket_source = WEBSOCKET.read_text(encoding="utf-8")
 
     def test_registry_changes_schedule_refresh(self) -> None:
@@ -54,6 +58,23 @@ class FrontendLoaderRegressionTests(unittest.TestCase):
         self.assertIn("@websocket_api.require_admin", self.websocket_source)
         self.assertIn("hass.states.get(entity_id) is not None", self.websocket_source)
         self.assertIn("registry.async_remove(entity_id)", self.websocket_source)
+
+    def test_assignment_panel_area_and_device_are_editable(self) -> None:
+        for source in (self.en_source, self.de_source):
+            self.assertIn('"detail-area-select"', source)
+            self.assertIn('"detail-device-select"', source)
+            self.assertIn("_assignmentSelect(", source)
+            self.assertIn('_saveEntityAssignment("area", event.target.value)', source)
+            self.assertIn('_saveEntityAssignment("device", event.target.value)', source)
+            self.assertIn('type: "assist_entity_manager/entity/update_assignment"', source)
+            self.assertIn('fieldName = field === "device" ? "device_id" : "area_id"', source)
+            self.assertIn("this._deviceAssignmentOptions(entity.areaId)", source)
+            self.assertIn(".filter((device) => !areaId || device.area_id === areaId)", source)
+            self.assertIn("...(nextDevice?.area_id ? { area_id: nextDevice.area_id } : {})", source)
+            self.assertIn("grid-template-columns: minmax(74px, .55fr) minmax(140px, 1.45fr)", source)
+        self.assertIn('"assist_entity_manager/entity/update_assignment"', self.websocket_source)
+        self.assertIn("@websocket_api.require_admin", self.websocket_source)
+        self.assertIn("registry.async_update_entity(entity_id, **changes)", self.websocket_source)
 
     def test_cleanup_ui_requires_explicit_confirmation(self) -> None:
         self.assertIn("window.confirm", self.runtime_source)
