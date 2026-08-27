@@ -1,6 +1,10 @@
 {
   "domain": "assist_entity_manager",
   "name": "Assist Entity Manager",
+  "after_dependencies": [
+    "alexa",
+    "lovelace"
+  ],
   "codeowners": [
     "@BremerLabs"
   ],
@@ -10,10 +14,6 @@
     "http",
     "panel_custom",
     "websocket_api"
-  ],
-  "after_dependencies": [
-    "alexa",
-    "lovelace"
   ],
   "documentation": "https://github.com/BremerLabs/assist-entity-manager",
   "iot_class": "calculated",
