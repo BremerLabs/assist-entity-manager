@@ -11,6 +11,10 @@
     "panel_custom",
     "websocket_api"
   ],
+  "after_dependencies": [
+    "alexa",
+    "lovelace"
+  ],
   "documentation": "https://github.com/BremerLabs/assist-entity-manager",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/BremerLabs/assist-entity-manager/issues",
