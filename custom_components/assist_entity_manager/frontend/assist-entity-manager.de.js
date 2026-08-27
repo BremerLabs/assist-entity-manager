@@ -1,7 +1,7 @@
 /*
  * Assist Entity Manager
  * HACS-ready Home Assistant dashboard card
- * Version 1.0.0
+ * Version 1.2.0
  *
  * Uses Home Assistant's authenticated WebSocket APIs only.
  */
@@ -33,6 +33,7 @@ class AssistEntityManager extends HTMLElement {
     this._excludedPlatforms = new Set();
     this._excludeDropdownOpen = false;
     this._cloudStatus = null;
+    this._manualAlexa = null;
     this._activeAssistants = [];
     this._assistantSupport = new Map();
     this._assistantSupportLoading = false;
@@ -41,6 +42,10 @@ class AssistEntityManager extends HTMLElement {
     this._aliasSaving = false;
     this._aliasError = "";
     this._aliasSuccess = "";
+    this._assignmentSaving = "";
+    this._assignmentError = "";
+    this._assignmentSuccess = "";
+    this._pendingAliasConflict = null;
     this._aliasIndexReady = false;
     this._aliasIndexLoading = false;
     this._aliasIndexError = "";
@@ -185,7 +190,7 @@ class AssistEntityManager extends HTMLElement {
     if (
       typeof state.bulkAssistant === "string" &&
       this._activeAssistants.some(
-        (assistant) => assistant.id === state.bulkAssistant
+        (assistant) => assistant.id === state.bulkAssistant && !assistant.readOnly
       )
     ) {
       this._bulkAssistant = state.bulkAssistant;
@@ -588,7 +593,7 @@ class AssistEntityManager extends HTMLElement {
   _assistantIconMarkup(assistant, extraClass = "") {
     const cls = extraClass ? ` ${extraClass}` : "";
 
-    if (assistant?.id === "cloud.alexa") {
+    if (assistant?.id === "cloud.alexa" || assistant?.id === "alexa.manual") {
       return `<span class="assistant-custom-icon assistant-custom-icon-alexa${cls}" aria-hidden="true">a</span>`;
     }
 
@@ -616,6 +621,13 @@ class AssistEntityManager extends HTMLElement {
         label: "Amazon Alexa",
         shortLabel: "Alexa",
         icon: "mdi:amazon-alexa",
+      },
+      {
+        id: "alexa.manual",
+        label: "Amazon Alexa (Manuell/YAML) · BETA",
+        shortLabel: "Alexa YAML · BETA",
+        icon: "mdi:amazon-alexa",
+        readOnly: true,
       },
       {
         id: "cloud.google_assistant",
@@ -662,6 +674,48 @@ class AssistEntityManager extends HTMLElement {
 
   _assistantIds() {
     return this._activeAssistants.map((assistant) => assistant.id);
+  }
+
+  _assistantIsReadOnly(assistantId) {
+    return Boolean(this._assistantById(assistantId)?.readOnly);
+  }
+
+  _writableAssistants() {
+    return this._activeAssistants.filter((assistant) => !assistant.readOnly);
+  }
+
+  async _loadManualAlexa() {
+    try {
+      const result = await this._callWS({
+        type: "assist_entity_manager/alexa_manual/status",
+        entity_ids: this._entities.map((entity) => entity.entityId),
+      });
+      this._manualAlexa = result || null;
+      this._activeAssistants = this._activeAssistants.filter((a) => a.id !== "alexa.manual");
+      if (!result?.enabled) return;
+      const manual = this._assistantCatalog().find((a) => a.id === "alexa.manual");
+      if (manual) this._activeAssistants.push(manual);
+      const byEntity = result.entities || {};
+      const supportedEntities = new Set();
+      for (const entity of this._entities) {
+        const status = byEntity[entity.entityId];
+        if (!status) continue;
+        if (status.supported) supportedEntities.add(entity.entityId);
+        this._exposed[entity.entityId] = {
+          ...(this._exposed[entity.entityId] || {}),
+          "alexa.manual": Boolean(status.exposed),
+        };
+        entity.manualAlexaName = typeof status.name === "string" ? status.name : "";
+      }
+      this._assistantSupport.set("alexa.manual", {
+        known: true,
+        entities: supportedEntities,
+      });
+    } catch (err) {
+      this._manualAlexa = null;
+      this._activeAssistants = this._activeAssistants.filter((a) => a.id !== "alexa.manual");
+      console.warn("Assist Entity Manager: manual Alexa configuration could not be evaluated", err);
+    }
   }
 
   _assistantExposedCount(assistantId) {
@@ -832,10 +886,6 @@ class AssistEntityManager extends HTMLElement {
       this._activeAssistants = this._deriveActiveAssistants();
       await this._loadAssistantSupport();
 
-      if (!this._activeAssistants.some((item) => item.id === this._bulkAssistant)) {
-        this._bulkAssistant = this._activeAssistants[0]?.id || "";
-      }
-
       this._areas = new Map(
         (areaResult || []).map((area) => [area.area_id, area])
       );
@@ -892,8 +942,16 @@ class AssistEntityManager extends HTMLElement {
           useEntityNameAlias: false,
           deviceClass: state?.attributes?.device_class || "",
           state: state?.state ?? "",
+          manualAlexaName: "",
         };
       });
+
+      await this._loadManualAlexa();
+
+      const writableAssistants = this._writableAssistants();
+      if (!writableAssistants.some((item) => item.id === this._bulkAssistant)) {
+        this._bulkAssistant = writableAssistants[0]?.id || "";
+      }
 
       this._sortEntities();
       this._processExternalChanges();
@@ -1019,6 +1077,140 @@ class AssistEntityManager extends HTMLElement {
       device.manufacturer ||
       ""
     );
+  }
+
+  _deviceAssignmentName(device) {
+    if (!device) return "";
+    return (
+      device.name_by_user ||
+      device.name ||
+      device.model ||
+      device.manufacturer ||
+      ""
+    );
+  }
+
+  _deviceAssignmentOptions(currentDeviceId = "", configEntryId = "") {
+    const items = [...this._devices.values()]
+      .filter((device) => {
+        if (device.id === currentDeviceId) return true;
+        const deviceConfigEntryId =
+          device.config_entry_id ||
+          (Array.isArray(device.config_entries) ? device.config_entries[0] : "") ||
+          "";
+        return deviceConfigEntryId === (configEntryId || "");
+      })
+      .map((device) => {
+      const area = device.area_id ? this._areas.get(device.area_id) : null;
+      const areaName = area?.name || "Ohne Bereich";
+      const name = this._deviceAssignmentName(device) || device.id;
+      return {
+        value: device.id,
+        label: `${name} · ${areaName}`,
+        current: device.id === currentDeviceId,
+        areaName,
+        name,
+      };
+    });
+
+    const collator = new Intl.Collator(this._hass?.language || "de", {
+      sensitivity: "base",
+      numeric: true,
+    });
+
+    return items
+      .sort((a, b) => {
+        if (a.current !== b.current) return a.current ? -1 : 1;
+        const byArea = collator.compare(a.areaName, b.areaName);
+        if (byArea) return byArea;
+        return collator.compare(a.name, b.name);
+      })
+      .map((item) => ({ value: item.value, label: item.label }));
+  }
+
+  _assignmentSelect(label, id, selectedValue, emptyLabel, options) {
+    const saving = Boolean(this._assignmentSaving);
+    return `
+      <label class="detail-item detail-select-item" for="${this._escapeAttr(id)}">
+        <span>${this._escape(label)}</span>
+        <select
+          id="${this._escapeAttr(id)}"
+          ${this._detailLoading || saving ? "disabled" : ""}
+        >
+          <option value="" ${selectedValue ? "" : "selected"}>${this._escape(emptyLabel)}</option>
+          ${(options || [])
+            .map(
+              (option) => `
+                <option value="${this._escapeAttr(option.value)}" ${
+                  selectedValue === option.value ? "selected" : ""
+                }>${this._escape(option.label)}</option>`
+            )
+            .join("")}
+        </select>
+      </label>
+    `;
+  }
+
+  async _saveEntityAssignment(field, value) {
+    if (!this._detailEntityId || this._detailLoading || this._assignmentSaving) return;
+
+    const entity = this._entities.find((item) => item.entityId === this._detailEntityId);
+    if (!entity || !this._detailRegistry) return;
+
+    const nextValue = value || "";
+    const currentAreaId = this._detailRegistry.area_id || "";
+    const currentDeviceId = this._detailRegistry.device_id || entity.deviceId || "";
+    const currentValue = field === "device" ? currentDeviceId : currentAreaId;
+    if (nextValue === currentValue) return;
+
+    this._assignmentSaving = field;
+    this._assignmentError = "";
+    this._assignmentSuccess = "";
+    this._render();
+
+    try {
+      let result;
+      if (field === "area") {
+        result = await this._callWS({
+          type: "config/entity_registry/update",
+          entity_id: this._detailEntityId,
+          area_id: nextValue || null,
+        });
+      } else {
+        result = await this._callWS({
+          type: "assist_entity_manager/entity/update_assignment",
+          entity_id: this._detailEntityId,
+          device_id: nextValue || null,
+        });
+      }
+
+      const saved = result?.entity_entry || result || {};
+      this._detailRegistry = {
+        ...(this._detailRegistry || {}),
+        ...saved,
+      };
+
+      const savedDeviceId = this._detailRegistry.device_id || "";
+      const savedDevice = savedDeviceId ? this._devices.get(savedDeviceId) : null;
+      const explicitAreaId = this._detailRegistry.area_id || "";
+      const effectiveAreaId = explicitAreaId || savedDevice?.area_id || "";
+      const effectiveArea = effectiveAreaId ? this._areas.get(effectiveAreaId) : null;
+
+      entity.deviceId = savedDeviceId;
+      entity.deviceName = this._deviceName(savedDevice);
+      entity.areaId = effectiveAreaId;
+      entity.areaName = effectiveArea?.name || "";
+      this._sortEntities();
+
+      this._assignmentSuccess =
+        field === "device" ? "Gerätezuordnung gespeichert." : "Bereichszuordnung gespeichert.";
+    } catch (err) {
+      console.error("Assist Entity Manager: assignment save", err);
+      this._assignmentError = err?.message || "Die Zuordnung konnte nicht gespeichert werden.";
+    } finally {
+      this._assignmentSaving = "";
+      this._render();
+    }
   }
 
   _domainIcon(domain) {
@@ -1345,16 +1537,19 @@ class AssistEntityManager extends HTMLElement {
         }
       );
 
-      // A red "real conflict" only exists when at least two equal spoken names
-      // are exposed to the same currently active assistant.
-      if (!conflictingAssistantIds.length) continue;
-
-      const relevantEntries = consideredEntries.filter((entry) =>
-        conflictingAssistantIds.some(
-          (assistantId) =>
-            this._exposureState(entry.entityId, assistantId) === "exposed"
-        )
-      );
+      // Keep the conflict overview available for every saved exact duplicate
+      // spoken name. If two matching names are currently exposed to the same
+      // assistant, keep showing those assistant badges as before. Otherwise
+      // the duplicate is still listed so it cannot disappear from the global
+      // conflict overview merely because exposure differs.
+      const relevantEntries = conflictingAssistantIds.length
+        ? consideredEntries.filter((entry) =>
+            conflictingAssistantIds.some(
+              (assistantId) =>
+                this._exposureState(entry.entityId, assistantId) === "exposed"
+            )
+          )
+        : consideredEntries;
 
       const entities = relevantEntries.map((entry) => {
         const entity = this._entities.find(
@@ -1628,17 +1823,16 @@ class AssistEntityManager extends HTMLElement {
   }
 
   _openEntityInHA(entityId) {
-    this._saveViewState();
+    if (!entityId) return;
 
-    try {
-      const url = new URL(window.location.href);
-      url.searchParams.set("more-info-entity-id", entityId);
-      window.location.assign(url.toString());
-    } catch (_err) {
-      window.location.assign(
-        `${window.location.pathname}?more-info-entity-id=${encodeURIComponent(entityId)}`
-      );
-    }
+    this._saveViewState();
+    this.dispatchEvent(
+      new CustomEvent("hass-more-info", {
+        detail: { entityId },
+        bubbles: true,
+        composed: true,
+      })
+    );
   }
 
   _openDeviceInHA(deviceId) {
@@ -1720,6 +1914,9 @@ class AssistEntityManager extends HTMLElement {
     this._detailError = "";
     this._aliasError = "";
     this._aliasSuccess = "";
+    this._assignmentError = "";
+    this._assignmentSuccess = "";
+    this._pendingAliasConflict = null;
     this._detailLoading = true;
     this._render();
 
@@ -1756,6 +1953,10 @@ class AssistEntityManager extends HTMLElement {
     this._detailError = "";
     this._aliasError = "";
     this._aliasSuccess = "";
+    this._assignmentError = "";
+    this._assignmentSuccess = "";
+    this._assignmentSaving = "";
+    this._pendingAliasConflict = null;
     this._render();
   }
 
@@ -1770,6 +1971,28 @@ class AssistEntityManager extends HTMLElement {
     const state = this._currentState(entity.entityId);
     const device = this._currentDevice(entity);
     const reg = this._detailRegistry || {};
+    const assignmentDeviceId = reg.device_id ?? entity.deviceId ?? "";
+    const assignmentDevice = assignmentDeviceId ? this._devices.get(assignmentDeviceId) : null;
+    const assignmentAreaId = reg.area_id ?? "";
+    const inheritedAreaId = assignmentDevice?.area_id || "";
+    const inheritedArea = inheritedAreaId ? this._areas.get(inheritedAreaId) : null;
+    const explicitArea = assignmentAreaId ? this._areas.get(assignmentAreaId) : null;
+    const assignmentConfigEntryId = reg.config_entry_id || "";
+    const assignmentAreaEmptyLabel = assignmentDeviceId
+      ? `Vom Gerät übernehmen (${inheritedArea?.name || "Gerät ohne Bereich"})`
+      : "Kein Bereich";
+    const hasAreaOverride = Boolean(assignmentAreaId);
+    const explicitAreaName = explicitArea?.name || assignmentAreaId || "Unbekannter Bereich";
+    const inheritedAreaName = inheritedArea?.name || "keinem Bereich";
+    const assignmentAreaHint = hasAreaOverride
+      ? (assignmentDeviceId
+          ? `Eigener Bereich: Diese Entität ist ${explicitAreaName} zugeordnet. Das Gerät selbst bleibt ${inheritedAreaName} zugeordnet.`
+          : `Eigener Bereich: Diese Entität ist ${explicitAreaName} zugeordnet.`)
+      : (assignmentDeviceId
+          ? (inheritedArea?.name
+              ? `Vom Gerät übernommen: Diese Entität folgt automatisch dem Gerätebereich ${inheritedArea.name}.`
+              : "Vom Gerät übernommen: Das zugeordnete Gerät hat aktuell keinen Bereich.")
+          : "Der Entität ist aktuell kein Bereich zugeordnet.");
     const deviceClassInfo = this._deviceClassDisplay(entity, reg, state);
     const deviceClass = deviceClassInfo.raw;
     const unit = state?.attributes?.unit_of_measurement || "";
@@ -1910,6 +2133,8 @@ class AssistEntityManager extends HTMLElement {
                           entity.entityId
                         );
                         const unsupported = supportState === "unsupported";
+                        const readOnly = Boolean(assistant.readOnly);
+                        const manualAlexaName = assistant.id === "alexa.manual" ? entity.manualAlexaName || "" : "";
 
                         return `
                           <div class="detail-assistant-row ${isOn ? "on" : ""} ${
@@ -1922,34 +2147,35 @@ class AssistEntityManager extends HTMLElement {
                               <div>
                                 <strong>${this._escape(assistant.label)}</strong>
                                 ${
-                                  unsupported
+                                  readOnly
+                                    ? `<small>BETA · Durch YAML verwaltet · ${isOn ? "Freigegeben" : "Nicht freigegeben"}${manualAlexaName ? ` · Alexa-Name: ${this._escape(manualAlexaName)}` : ""}</small>`
+                                    : unsupported
                                     ? `<small class="assistant-unsupported-text">
                                         <ha-icon icon="mdi:alert-circle"></ha-icon>
-                                        Nicht unterstützt${
-                                          isOn ? " – Ausschalten ist weiterhin möglich" : ""
-                                        }
+                                        Nicht unterstützt${isOn ? " – Ausschalten ist weiterhin möglich" : ""}
                                       </small>`
-                                    : `<small>${
-                                        isOn
-                                          ? "Diese Entität ist freigegeben"
-                                          : "Diese Entität ist nicht freigegeben"
-                                      }</small>`
+                                    : `<small>${isOn ? "Diese Entität ist freigegeben" : "Diese Entität ist nicht freigegeben"}</small>`
                                 }
                               </div>
                             </div>
 
-                            <label class="switch detail-switch" title="${this._escapeAttr(
-                              assistant.label
-                            )}-Freigabe ändern">
-                              <input
-                                class="detail-assistant-toggle"
-                                type="checkbox"
-                                data-assistant="${this._escapeAttr(assistant.id)}"
-                                ${isOn ? "checked" : ""}
-                                ${unsupported && !isOn ? "disabled" : ""}
-                              >
-                              <span class="slider"></span>
-                            </label>
+                            ${
+                              readOnly
+                                ? `<span class="manual-readonly-state ${isOn ? "on" : "off"}" title="Durch YAML verwaltet – nur lesbar">
+                                    <ha-icon icon="mdi:file-lock-outline"></ha-icon>
+                                    <span>${unsupported ? "Nicht unterstützt" : isOn ? "Freigegeben" : "Nicht freigegeben"}</span>
+                                  </span>`
+                                : `<label class="switch detail-switch" title="${this._escapeAttr(assistant.label)}-Freigabe ändern">
+                                    <input
+                                      class="detail-assistant-toggle"
+                                      type="checkbox"
+                                      data-assistant="${this._escapeAttr(assistant.id)}"
+                                      ${isOn ? "checked" : ""}
+                                      ${unsupported && !isOn ? "disabled" : ""}
+                                    >
+                                    <span class="slider"></span>
+                                  </label>`
+                            }
                           </div>
                         `;
                       })
@@ -2132,8 +2358,44 @@ class AssistEntityManager extends HTMLElement {
 
             <div class="detail-section">
               <h3>Zuordnung</h3>
-              ${this._detailItem("Bereich", entity.areaName || "Kein Bereich")}
-              ${this._detailItem("Gerät", entity.deviceName || "Kein Gerät")}
+              ${this._assignmentSelect(
+                "Bereich der Entität",
+                "detail-area-select",
+                assignmentAreaId,
+                assignmentAreaEmptyLabel,
+                [...this._areas.values()]
+                  .sort((a, b) =>
+                    (a.name || a.area_id || "").localeCompare(
+                      b.name || b.area_id || "",
+                      this._hass?.language || "de",
+                      { sensitivity: "base" }
+                    )
+                  )
+                  .map((area) => ({
+                    value: area.area_id,
+                    label: area.name || area.area_id,
+                  }))
+              )}
+              ${this._assignmentSelect(
+                "Gerät",
+                "detail-device-select",
+                assignmentDeviceId,
+                "Kein Gerät",
+                this._deviceAssignmentOptions(assignmentDeviceId, assignmentConfigEntryId)
+              )}
+              <div class="assignment-hint ${hasAreaOverride ? "warning" : ""}">
+                ${this._escape(assignmentAreaHint)}
+              </div>
+              ${
+                this._assignmentError
+                  ? `<div class="assignment-feedback error-text">${this._escape(this._assignmentError)}</div>`
+                  : ""
+              }
+              ${
+                this._assignmentSuccess
+                  ? `<div class="assignment-feedback success-text">${this._escape(this._assignmentSuccess)}</div>`
+                  : ""
+              }
               ${this._detailItem("Hersteller", manufacturer)}
               ${this._detailItem("Modell", model)}
               ${this._detailItem("Modell-ID", modelId)}
@@ -2147,7 +2409,7 @@ class AssistEntityManager extends HTMLElement {
               ${this._detailItem("Letzte Änderung", this._formatDate(state?.last_changed))}
               ${this._detailItem("Letztes Update", this._formatDate(state?.last_updated))}
               ${this._detailItem("Device-ID", entity.deviceId)}
-              ${this._detailItem("Area-ID", entity.areaId)}
+              ${this._detailItem("Area-ID", assignmentAreaId || inheritedAreaId)}
               ${this._detailItem("Icon", icon)}
               ${this._detailItem("Translation Key", entity.translationKey)}
               ${this._detailItem("Versteckt", entity.hidden ? "Ja" : "Nein")}
@@ -2230,6 +2492,44 @@ class AssistEntityManager extends HTMLElement {
             <span>Registry-Details werden erst beim Öffnen dieser Ansicht abgefragt.</span>
           </div>
         </section>
+
+        ${
+          this._pendingAliasConflict
+            ? `
+              <div class="alias-conflict-dialog-backdrop" role="presentation">
+                <section class="alias-conflict-dialog" role="dialog" aria-modal="true" aria-label="Namenskonflikt">
+                  <div class="alias-conflict-dialog-icon">
+                    <ha-icon icon="mdi:alert-outline"></ha-icon>
+                  </div>
+                  <div class="alias-conflict-dialog-copy">
+                    <h3>Namenskonflikt erkannt</h3>
+                    <p>Der Alias <strong>„${this._escape(this._pendingAliasConflict.alias)}“</strong> wird bereits von ${
+                      this._pendingAliasConflict.conflicts.length === 1
+                        ? "einer anderen Entität"
+                        : `${this._pendingAliasConflict.conflicts.length} anderen Entitäten`
+                    } verwendet.</p>
+                    <div class="alias-conflict-dialog-targets">
+                      ${this._pendingAliasConflict.conflicts
+                        .map(
+                          (conflict) => `
+                            <div class="alias-conflict-dialog-target">
+                              <strong>${this._escape(conflict.name)}</strong>
+                              <span>${this._escape(conflict.entityId)}</span>
+                              ${conflict.areaName ? `<small>${this._escape(conflict.areaName)}</small>` : ""}
+                            </div>`
+                        )
+                        .join("")}
+                    </div>
+                    <p class="alias-conflict-dialog-note">Gleiche gesprochene Namen können dazu führen, dass der Sprachassistent nicht eindeutig weiß, welche Entität gemeint ist.</p>
+                  </div>
+                  <div class="alias-conflict-dialog-actions">
+                    <button class="btn secondary alias-conflict-cancel" type="button">Abbrechen</button>
+                    <button class="btn primary alias-conflict-confirm" type="button">Trotzdem hinzufügen</button>
+                  </div>
+                </section>
+              </div>`
+            : ""
+        }
       </div>
     `;
   }
@@ -2344,7 +2644,33 @@ class AssistEntityManager extends HTMLElement {
         )
       : [];
 
+    const conflicts = this._spokenNameConflicts(value, this._detailEntityId);
+    if (this._aliasIndexReady && conflicts.length) {
+      this._pendingAliasConflict = {
+        alias: value,
+        conflicts,
+        nextAliases: [...current, value],
+      };
+      this._aliasError = "";
+      this._aliasSuccess = "";
+      this._render();
+      return;
+    }
+
     this._saveAliases([...current, value]);
+  }
+
+  _cancelAliasConflict() {
+    if (!this._pendingAliasConflict) return;
+    this._pendingAliasConflict = null;
+    this._render();
+  }
+
+  _confirmAliasConflict() {
+    const pending = this._pendingAliasConflict;
+    if (!pending) return;
+    this._pendingAliasConflict = null;
+    this._saveAliases(pending.nextAliases);
   }
 
   _removeAliasAt(index) {
@@ -2565,15 +2891,14 @@ class AssistEntityManager extends HTMLElement {
         );
       }
 
-      const assistants = this._activeAssistants.map((assistant) => ({
-        id: assistant.id,
-        label: assistant.label,
-      }));
+      const assistants = this._activeAssistants
+        .filter((assistant) => !assistant.readOnly)
+        .map((assistant) => ({ id: assistant.id, label: assistant.label }));
 
       const payload = {
         schema: "assist-entity-manager-export",
         schema_version: AEM_BACKUP_SCHEMA_VERSION,
-        plugin_version: "1.0.0",
+        plugin_version: "1.2.0",
         exported_at: new Date().toISOString(),
         active_assistants: assistants,
         manager_preferences: {
@@ -2717,7 +3042,7 @@ class AssistEntityManager extends HTMLElement {
       const currentById = new Map(
         this._entities.map((entity) => [entity.entityId, entity])
       );
-      const activeAssistantIds = new Set(this._assistantIds());
+      const activeAssistantIds = new Set(this._writableAssistants().map((assistant) => assistant.id));
 
       let matching = 0;
       let missing = 0;
@@ -3024,16 +3349,23 @@ class AssistEntityManager extends HTMLElement {
                       <small>Doppelter gesprochener Name</small>
                       <strong>„${this._escape(group.spokenName)}“</strong>
                       <span class="conflict-assistants">
-                        ${group.assistants
-                          .map(
-                            (assistant) => `
-                              <span>
-                                ${this._assistantIconMarkup(assistant)}
-                                ${this._escape(assistant.shortLabel)}
-                              </span>
-                            `
-                          )
-                          .join("")}
+                        ${
+                          group.assistants.length
+                            ? group.assistants
+                                .map(
+                                  (assistant) => `
+                                    <span>
+                                      ${this._assistantIconMarkup(assistant)}
+                                      ${this._escape(assistant.shortLabel)}
+                                    </span>
+                                  `
+                                )
+                                .join("")
+                            : `<span>
+                                <ha-icon icon="mdi:content-duplicate"></ha-icon>
+                                Gespeicherte Doppelbelegung
+                              </span>`
+                        }
                       </span>
                     </div>
                   </div>
@@ -3466,16 +3798,20 @@ class AssistEntityManager extends HTMLElement {
       : [];
 
     const allowed = new Set(this._assistantIds());
-    const assistants = requestedAssistants.filter((id) => allowed.has(id));
+    const allowedAssistants = requestedAssistants.filter((id) => allowed.has(id));
+    const readOnlyAssistants = allowedAssistants.filter((id) => this._assistantIsReadOnly(id));
+    const assistants = allowedAssistants.filter((id) => !this._assistantIsReadOnly(id));
+
+    if (readOnlyAssistants.length) this._actionNotice = "Manuelle Alexa-Freigaben werden durch die Home-Assistant-YAML-Konfiguration verwaltet und sind in dieser AEM-Version nur lesbar.";
 
     if (!assistants.length) {
-      this._error = "Kein aktivierter Sprachassistent für diese Aktion ausgewählt.";
+      this._error = readOnlyAssistants.length ? "" : "Kein schreibbarer Sprachassistent für diese Aktion ausgewählt.";
       this._render();
       return;
     }
 
     this._error = "";
-    this._actionNotice = "";
+    if (!readOnlyAssistants.length) this._actionNotice = "";
     this._setBusy(true);
 
     let skippedUnsupported = 0;
@@ -3568,6 +3904,7 @@ class AssistEntityManager extends HTMLElement {
     const notExposedCount = Math.max(0, total - exposedCount);
     const exposedPercent = total ? Math.round((exposedCount / total) * 100) : 0;
     const activeAssistants = this._activeAssistants;
+    const writableAssistants = activeAssistants.filter((assistant) => !assistant.readOnly);
     const assistantCounts = new Map(
       activeAssistants.map((assistant) => [
         assistant.id,
@@ -4069,12 +4406,12 @@ class AssistEntityManager extends HTMLElement {
               </button>
 
               ${
-                activeAssistants.length
+                writableAssistants.length
                   ? `
                     <label class="bulk-assistant">
                       <span>Massenaktion für</span>
                       <select id="bulk-assistant-select">
-                        ${activeAssistants
+                        ${writableAssistants
                           .map(
                             (assistant) => `
                               <option value="${this._escapeAttr(assistant.id)}" ${
@@ -4104,13 +4441,13 @@ class AssistEntityManager extends HTMLElement {
                   : ""
               }
               <button class="btn danger bulk-off" ${
-                this._selected.size && activeAssistants.length ? "" : "disabled"
+                this._selected.size && writableAssistants.length ? "" : "disabled"
               }>
                 <ha-icon icon="mdi:eye-off-outline"></ha-icon>
                 Sperren
               </button>
               <button class="btn primary bulk-on" ${
-                this._selected.size && activeAssistants.length ? "" : "disabled"
+                this._selected.size && writableAssistants.length ? "" : "disabled"
               }>
                 <ha-icon icon="mdi:check-circle-outline"></ha-icon>
                 Freigeben
@@ -4442,6 +4779,7 @@ class AssistEntityManager extends HTMLElement {
                             entity.entityId
                           );
                           const unsupported = supportState === "unsupported";
+                          const readOnly = Boolean(assistant.readOnly);
 
                           return `
                             <label
@@ -4449,7 +4787,9 @@ class AssistEntityManager extends HTMLElement {
                                 unsupported ? "unsupported" : ""
                               }"
                               title="${this._escapeAttr(assistant.label)}: ${
-                                unsupported
+                                readOnly
+                                  ? `durch YAML verwaltet · ${assistantOn ? "freigegeben" : "nicht freigegeben"}`
+                                  : unsupported
                                   ? "nicht unterstützt"
                                   : assistantOn
                                   ? "freigegeben"
@@ -4459,6 +4799,11 @@ class AssistEntityManager extends HTMLElement {
                               <span class="assistant-mini-label">
                                 ${this._assistantIconMarkup(assistant)}
                                 <span>${this._escape(assistant.shortLabel)}</span>
+                                ${
+                                  readOnly
+                                    ? `<span class="mini-readonly-icon" title="Durch YAML verwaltet – nur lesbar" aria-label="Durch YAML verwaltet – nur lesbar"><ha-icon icon="mdi:file-lock-outline"></ha-icon></span>`
+                                    : ""
+                                }
                                 ${
                                   unsupported
                                     ? `<span
@@ -4475,19 +4820,24 @@ class AssistEntityManager extends HTMLElement {
                                     : ""
                                 }
                               </span>
-                              <span class="mini-switch">
-                                <input
-                                  class="assistant-toggle"
-                                  type="checkbox"
-                                  data-assistant="${this._escapeAttr(assistant.id)}"
-                                  ${assistantOn ? "checked" : ""}
-                                  ${unsupported && !assistantOn ? "disabled" : ""}
-                                  aria-label="${this._escapeAttr(
-                                    assistant.label
-                                  )}-Freigabe für ${this._escapeAttr(entity.name)}"
-                                >
-                                <span class="mini-slider"></span>
-                              </span>
+                              ${
+                                readOnly
+                                  ? `<span class="manual-readonly-mini ${assistantOn ? "on" : "off"}" title="Durch YAML verwaltet – nur lesbar">
+                                      <ha-icon icon="mdi:file-lock-outline"></ha-icon>
+                                      <span>${unsupported ? "Nicht unterstützt" : assistantOn ? "Freigegeben" : "Nicht freigegeben"}</span>
+                                    </span>`
+                                  : `<span class="mini-switch">
+                                      <input
+                                        class="assistant-toggle"
+                                        type="checkbox"
+                                        data-assistant="${this._escapeAttr(assistant.id)}"
+                                        ${assistantOn ? "checked" : ""}
+                                        ${unsupported && !assistantOn ? "disabled" : ""}
+                                        aria-label="${this._escapeAttr(assistant.label)}-Freigabe für ${this._escapeAttr(entity.name)}"
+                                      >
+                                      <span class="mini-slider"></span>
+                                    </span>`
+                              }
                             </label>
                           `;
                         })
@@ -4877,12 +5227,24 @@ class AssistEntityManager extends HTMLElement {
     });
 
     this.shadowRoot
+      .querySelector("#detail-area-select")
+      ?.addEventListener("change", (event) => {
+        this._saveEntityAssignment("area", event.target.value);
+      });
+
+    this.shadowRoot
+      .querySelector("#detail-device-select")
+      ?.addEventListener("change", (event) => {
+        this._saveEntityAssignment("device", event.target.value);
+      });
+
+    this.shadowRoot
       .querySelectorAll(".detail-assistant-toggle")
       .forEach((toggle) => {
         toggle.addEventListener("change", async (event) => {
           const desired = event.target.checked;
           const assistant = event.target.dataset.assistant;
-          if (!assistant) return;
+          if (!assistant || this._assistantIsReadOnly(assistant)) return;
           await this._setExposure(
             [this._detailEntityId],
             desired,
@@ -4917,6 +5279,14 @@ class AssistEntityManager extends HTMLElement {
         this._addAliasFromInput();
       }
     });
+
+    this.shadowRoot
+      .querySelector(".alias-conflict-cancel")
+      ?.addEventListener("click", () => this._cancelAliasConflict());
+
+    this.shadowRoot
+      .querySelector(".alias-conflict-confirm")
+      ?.addEventListener("click", () => this._confirmAliasConflict());
 
     this.shadowRoot.querySelectorAll(".remove-alias").forEach((button) => {
       button.addEventListener("click", () => {
@@ -4984,7 +5354,7 @@ class AssistEntityManager extends HTMLElement {
         toggle.addEventListener("change", (event) => {
           const desired = event.target.checked;
           const assistant = event.target.dataset.assistant;
-          if (!assistant) return;
+          if (!assistant || this._assistantIsReadOnly(assistant)) return;
           this._setExposure([entityId], desired, [assistant]);
         });
       });
@@ -6900,6 +7270,15 @@ class AssistEntityManager extends HTMLElement {
         cursor: not-allowed;
       }
 
+      .manual-readonly-state { display:inline-flex; align-items:center; gap:6px; min-width:118px; justify-content:center; padding:7px 9px; border:1px solid var(--divider-color); border-radius:999px; color:var(--secondary-text-color); background:var(--secondary-background-color); font-size:10px; font-weight:700; white-space:nowrap; }
+      .manual-readonly-state.on { color:var(--success-color,#43a047); border-color:color-mix(in srgb,var(--success-color,#43a047) 38%,var(--divider-color)); }
+      .manual-readonly-state ha-icon { --mdc-icon-size:15px; }
+      .manual-readonly-mini { display:inline-flex; align-items:center; gap:4px; max-width:132px; padding:4px 7px; border:1px solid var(--divider-color); border-radius:999px; color:var(--secondary-text-color); background:var(--secondary-background-color); font-size:9px; font-weight:700; white-space:nowrap; }
+      .manual-readonly-mini.on { color:var(--success-color,#43a047); border-color:color-mix(in srgb,var(--success-color,#43a047) 38%,var(--divider-color)); }
+      .manual-readonly-mini ha-icon { --mdc-icon-size:12px; }
+      .mini-readonly-icon { display:inline-grid; place-items:center; margin-left:3px; color:var(--secondary-text-color); cursor:help; }
+      .mini-readonly-icon ha-icon { --mdc-icon-size:13px; }
+
       .mini-unsupported-icon {
         display: inline-grid;
         place-items: center;
@@ -7918,6 +8297,49 @@ class AssistEntityManager extends HTMLElement {
         border-bottom: 1px solid color-mix(in srgb, var(--divider-color) 65%, transparent);
       }
 
+      .detail-select-item {
+        align-items: center;
+      }
+
+      .detail-select-item select {
+        min-width: 0;
+        width: 100%;
+        justify-self: end;
+        min-height: 34px;
+        padding: 5px 30px 5px 9px;
+        border: 1px solid var(--divider-color);
+        border-radius: 9px;
+        background: var(--card-background-color);
+        color: var(--primary-text-color);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .detail-select-item select:disabled {
+        opacity: .65;
+      }
+
+      .assignment-hint {
+        margin: 7px 0 2px;
+        padding: 8px 10px;
+        border-radius: 9px;
+        background: color-mix(in srgb, var(--primary-color) 7%, transparent);
+        color: var(--secondary-text-color);
+        font-size: 10px;
+        line-height: 1.4;
+      }
+
+      .assignment-hint.warning {
+        background: color-mix(in srgb, var(--warning-color, #ff9800) 10%, transparent);
+        color: var(--primary-text-color);
+      }
+
+      .assignment-feedback {
+        padding: 7px 0 2px;
+        font-size: 11px;
+        font-weight: 650;
+      }
+
       .detail-item:last-child {
         border-bottom: 0;
       }
@@ -8002,6 +8424,49 @@ class AssistEntityManager extends HTMLElement {
         width: 14px;
         height: 14px;
       }
+
+      .alias-conflict-dialog-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 12050;
+        display: grid;
+        place-items: center;
+        padding: 18px;
+        background: rgba(0, 0, 0, 0.56);
+        backdrop-filter: blur(3px);
+      }
+
+      .alias-conflict-dialog {
+        width: min(560px, 96vw);
+        max-height: min(720px, 90vh);
+        overflow: auto;
+        padding: 20px;
+        border: 1px solid color-mix(in srgb, var(--warning-color, #ff9800) 48%, var(--divider-color));
+        border-radius: 18px;
+        background: var(--card-background-color, var(--ha-card-background));
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+      }
+
+      .alias-conflict-dialog-icon {
+        display: grid;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        margin-bottom: 12px;
+        border-radius: 13px;
+        color: var(--warning-color, #ff9800);
+        background: color-mix(in srgb, var(--warning-color, #ff9800) 14%, transparent);
+      }
+
+      .alias-conflict-dialog-icon ha-icon { --mdc-icon-size: 24px; }
+      .alias-conflict-dialog-copy h3 { margin: 0 0 8px; font-size: 18px; }
+      .alias-conflict-dialog-copy p { margin: 0; color: var(--secondary-text-color); font-size: 12px; line-height: 1.5; }
+      .alias-conflict-dialog-targets { display: grid; gap: 7px; margin: 14px 0; }
+      .alias-conflict-dialog-target { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--divider-color); border-radius: 11px; background: var(--secondary-background-color); }
+      .alias-conflict-dialog-target strong { font-size: 12px; }
+      .alias-conflict-dialog-target span, .alias-conflict-dialog-target small { color: var(--secondary-text-color); font-size: 10px; overflow-wrap: anywhere; }
+      .alias-conflict-dialog-note { padding: 10px 12px; border-radius: 11px; background: color-mix(in srgb, var(--warning-color, #ff9800) 9%, transparent); }
+      .alias-conflict-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
 
       .alias-conflict-box {
         margin-top: 11px;

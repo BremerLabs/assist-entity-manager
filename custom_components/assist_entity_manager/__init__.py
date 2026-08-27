@@ -11,6 +11,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN, VERSION
+from .manual_alexa import async_register_manual_alexa_websocket_commands
+from .orphans import AEMOrphanManager, DATA_ORPHAN_MANAGER
 from .semantic_provider import SemanticProviderManager
 from .settings import AEMSettingsStore
 from .websocket import (
@@ -23,6 +25,7 @@ PANEL_URL_PATH = "assist-entity-manager"
 FRONTEND_BASE_URL = "/assist_entity_manager"
 MODULE_URL = f"{FRONTEND_BASE_URL}/assist-entity-manager.js?v={VERSION}"
 RUNTIME_FIX_URL = f"{FRONTEND_BASE_URL}/aem-runtime-fixes.js?v={VERSION}"
+ORPHAN_UI_URL = f"{FRONTEND_BASE_URL}/aem-orphan-manager.js?v={VERSION}"
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -38,12 +41,17 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     await settings.async_load()
 
     provider = SemanticProviderManager()
+    orphan_manager = AEMOrphanManager(hass, settings)
+    await orphan_manager.async_setup()
 
     hass.data[DOMAIN] = {
         DATA_SETTINGS: settings,
         DATA_SEMANTIC_PROVIDER: provider,
+        DATA_ORPHAN_MANAGER: orphan_manager,
     }
+
     async_register_websocket_commands(hass)
+    async_register_manual_alexa_websocket_commands(hass)
     return True
 
 
@@ -51,6 +59,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Assist Entity Manager from a config entry."""
     frontend.add_extra_js_url(hass, MODULE_URL)
     frontend.add_extra_js_url(hass, RUNTIME_FIX_URL)
+    frontend.add_extra_js_url(hass, ORPHAN_UI_URL)
 
     if frontend.async_panel_exists(hass, PANEL_URL_PATH):
         frontend.async_remove_panel(hass, PANEL_URL_PATH)
@@ -70,11 +79,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload Assist Entity Manager."""
+    """Unload Assist Entity Manager from a config entry."""
     if frontend.async_panel_exists(hass, PANEL_URL_PATH):
         frontend.async_remove_panel(hass, PANEL_URL_PATH)
 
-    for url in (RUNTIME_FIX_URL, MODULE_URL):
+    for url in (ORPHAN_UI_URL, RUNTIME_FIX_URL, MODULE_URL):
         try:
             frontend.remove_extra_js_url(hass, url)
         except (KeyError, ValueError):
